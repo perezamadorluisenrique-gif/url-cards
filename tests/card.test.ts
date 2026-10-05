@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { blockIndent, cardBlock, findCardBlock, findUrlTarget, imageAllowed, parseFlat, toCard, wikilinkTarget } from '../src/card.ts';
+import { blockIndent, cardBlock, cardEdit, findCardBlock, findUrlTarget, imageAllowed, parseFlat, toCard, wikilinkTarget } from '../src/card.ts';
 
 test('parseFlat reads quoted and bare values, including an unquoted wikilink', () => {
   const r = parseFlat('url: https://example.com\ntitle: "He said \\"hi\\""\ndescription: \'it\'\'s\'\nimage: [[pic.png]]\nhost: example.com');
@@ -53,7 +53,7 @@ test('cardBlock round-trips through parseFlat', () => {
 });
 
 test('findUrlTarget: bare address alone, in a list, mid-sentence, as a link', () => {
-  assert.deepEqual(findUrlTarget('https://a.com/x', 3), { from: 0, to: 15, url: 'https://a.com/x', prefix: '', alone: true });
+  assert.deepEqual(findUrlTarget('https://a.com/x', 3), { from: 0, to: 15, url: 'https://a.com/x', prefix: '', leading: true, alone: true, marker: false, linePrefix: '' });
   const li = findUrlTarget('- [ ] https://a.com/x', 0);
   assert.equal(li?.prefix, '- [ ] ');
   assert.equal(li?.alone, true);
@@ -82,4 +82,41 @@ test('findCardBlock finds the cardlink block around a line and ignores other fen
   assert.equal(findCardBlock(lines, 0), null);
   assert.equal(findCardBlock(lines, 7), null);
   assert.deepEqual(findCardBlock(lines, 10), { start: 9, end: 11 });
+});
+
+const M = { url: 'https://a.com/x', title: 'T' };
+const BLOCK = ['```cardlink', 'url: "https://a.com/x"', 'title: "T"', '```'];
+const edit = (line: string, ch = 0) => {
+  const target = findUrlTarget(line, ch);
+  assert.ok(target);
+  const e = cardEdit(line, target, M);
+  return line.slice(0, e.from) + e.text;
+};
+
+test('cardEdit: address alone on its line', () => {
+  assert.equal(edit('https://a.com/x'), BLOCK.join('\n'));
+});
+
+test('cardEdit: list item and task item indent by the marker only', () => {
+  assert.equal(edit('- https://a.com/x'), '- \n' + BLOCK.map((l) => '  ' + l).join('\n'));
+  assert.equal(edit('- [ ] https://a.com/x'), '- [ ] \n' + BLOCK.map((l) => '  ' + l).join('\n'));
+  assert.equal(edit('12. https://a.com/x'), '12. \n' + BLOCK.map((l) => '    ' + l).join('\n'));
+  assert.equal(edit('  - https://a.com/x'), '  - \n' + BLOCK.map((l) => '    ' + l).join('\n'));
+});
+
+test('cardEdit: every line stays inside a quote or callout', () => {
+  assert.equal(edit('> https://a.com/x'), '> ' + BLOCK.join('\n> '));
+  assert.equal(edit('> > https://a.com/x'), '> > ' + BLOCK.join('\n> > '));
+  assert.equal(edit('> - https://a.com/x'), '> - \n' + BLOCK.map((l) => '>   ' + l).join('\n'));
+});
+
+test('cardEdit: mid-sentence keeps punctuation with the text before and the rest after', () => {
+  assert.equal(edit('See https://a.com/x. Then more', 6), 'See.\n' + BLOCK.join('\n') + '\nThen more');
+  assert.equal(edit('See https://a.com/x now', 6), 'See\n' + BLOCK.join('\n') + '\nnow');
+  assert.equal(edit('> See https://a.com/x now', 8), '> See\n' + BLOCK.map((l) => '> ' + l).join('\n') + '\n> now');
+  assert.equal(edit('- See https://a.com/x now', 8), '- See\n' + BLOCK.map((l) => '  ' + l).join('\n') + '\n  now');
+});
+
+test('cardEdit: an address first in the line with text after it', () => {
+  assert.equal(edit('https://a.com/x is great'), BLOCK.join('\n') + '\nis great');
 });

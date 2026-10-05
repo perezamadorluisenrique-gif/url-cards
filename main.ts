@@ -1,7 +1,7 @@
 import { Notice, Plugin, PluginSettingTab, Setting, getLinkpath, parseYaml, requestUrl, setIcon } from 'obsidian';
 import type { App, Editor, MarkdownFileInfo, SettingDefinitionItem } from 'obsidian';
 
-import { blockIndent, cardBlock, findCardBlock, findUrlTarget, imageAllowed, parseFlat, toCard, wikilinkTarget } from './src/card.ts';
+import { blockIndent, cardBlock, cardEdit, findCardBlock, findUrlTarget, imageAllowed, parseFlat, toCard, wikilinkTarget } from './src/card.ts';
 import type { CardData, UrlTarget } from './src/card.ts';
 import { asBareUrl, bareCard, extractCard, isWebUrl } from './src/meta.ts';
 import type { PageMeta } from './src/meta.ts';
@@ -11,11 +11,14 @@ interface UrlCardsSettings {
   cardOnPaste: boolean;
   /** Load the thumbnail and the site icon from the card's own addresses. Off keeps every request to the site you saved. */
   loadImages: boolean;
+  /** The "another plugin draws cardlink blocks" notice was shown and the clash has not cleared since. */
+  conflictNoticeShown: boolean;
 }
 
 const DEFAULT_SETTINGS: UrlCardsSettings = {
   cardOnPaste: false,
   loadImages: true,
+  conflictNoticeShown: false,
 };
 
 const TIMEOUT_MS = 10_000;
@@ -27,7 +30,7 @@ export default class UrlCardsPlugin extends Plugin {
     const data = (await this.loadData()) as Partial<UrlCardsSettings> | null;
     this.settings = { ...DEFAULT_SETTINGS, ...data };
 
-    this.registerMarkdownCodeBlockProcessor('cardlink', (source, el) => this.renderCard(source, el));
+    await this.registerCardBlock();
 
     this.registerEvent(
       this.app.workspace.on('editor-paste', (evt, editor, info) => {
@@ -65,6 +68,32 @@ export default class UrlCardsPlugin extends Plugin {
     });
 
     this.addSettingTab(new UrlCardsSettingTab(this.app, this));
+  }
+
+  /**
+   * Draws `cardlink` blocks. Obsidian allows one processor per language, so with
+   * Auto Card Link on this throws; the commands then still work and the user is
+   * told once. Returns whether the blocks are ours.
+   */
+  async registerCardBlock(): Promise<boolean> {
+    try {
+      this.registerMarkdownCodeBlockProcessor('cardlink', (source, el) => this.renderCard(source, el));
+    } catch {
+      if (!this.settings.conflictNoticeShown) {
+        new Notice(
+          'URL Cards: another plugin, probably Auto Card Link, already draws cardlink blocks, so it keeps drawing them. Turn it off and restart URL Cards to have URL Cards draw them. The commands still work.',
+          15_000,
+        );
+        this.settings.conflictNoticeShown = true;
+        await this.saveSettings();
+      }
+      return false;
+    }
+    if (this.settings.conflictNoticeShown) {
+      this.settings.conflictNoticeShown = false;
+      await this.saveSettings();
+    }
+    return true;
   }
 
   async saveSettings() {
@@ -131,8 +160,9 @@ export default class UrlCardsPlugin extends Plugin {
   // ---- fetching ----
 
   /** Card data for `url`: its Open Graph tags, else its title, else just the address. Null when it is not a public page. */
-  async fetchCard(url: string): Promise<PageMeta | null> {
+  async fetchCard(url: string, showProgress = false): Promise<PageMeta | null> {
     if (!isWebUrl(url)) return null;
+    const progress = showProgress ? new Notice('Loading page…', 0) : null;
     try {
       const request = requestUrl({ url, throw: false, headers: { Accept: 'text/html,application/xhtml+xml' } });
       let timer = 0;
@@ -146,6 +176,8 @@ export default class UrlCardsPlugin extends Plugin {
       return extractCard(res.text, url) ?? bareCard(url);
     } catch {
       return bareCard(url);
+    } finally {
+      progress?.hide();
     }
   }
 
@@ -165,7 +197,7 @@ export default class UrlCardsPlugin extends Plugin {
       return;
     }
     const path = info.file?.path;
-    const meta = await this.fetchCard(target.url);
+    const meta = await this.fetchCard(target.url, true);
     if (!meta || info.file?.path !== path) return;
     if (meta.title === meta.host && !meta.description) new Notice('The page gave no details; the card shows only its address.');
     // The line may have changed while the page loaded: only edit if the same address is still there.
@@ -177,18 +209,8 @@ export default class UrlCardsPlugin extends Plugin {
   /** Puts the card where `target` is: replacing the whole line when it stands alone, else splitting the line around it. */
   private writeCard(editor: Editor, lineNo: number, target: UrlTarget, meta: PageMeta) {
     const line = editor.getLine(lineNo);
-    const to = { line: lineNo, ch: line.length };
-    if (target.alone) {
-      // After a list marker the card goes on the next line, indented under the item.
-      const block = cardBlock(meta, ' '.repeat(target.prefix.length));
-      editor.transaction({ changes: [{ from: { line: lineNo, ch: target.prefix.length }, to, text: target.prefix ? '\n' + block : block }] });
-      return;
-    }
-    const lead = line.slice(0, target.from).replace(/\s+$/, '');
-    const trail = line.slice(target.to).replace(/^\s+/, '');
-    const indent = /^\s*/.exec(line)?.[0] ?? '';
-    const text = [lead, cardBlock(meta, indent), trail && indent + trail].filter(Boolean).join('\n');
-    editor.transaction({ changes: [{ from: { line: lineNo, ch: 0 }, to, text }] });
+    const edit = cardEdit(line, target, meta);
+    editor.transaction({ changes: [{ from: { line: lineNo, ch: edit.from }, to: { line: lineNo, ch: line.length }, text: edit.text }] });
   }
 
   /** After a paste put the bare address on its line, swap it for a card if it is still alone there. */
@@ -220,7 +242,7 @@ export default class UrlCardsPlugin extends Plugin {
       return;
     }
     const path = info.file?.path;
-    const meta = await this.fetchCard(parsed.card.url);
+    const meta = await this.fetchCard(parsed.card.url, true);
     if (!meta || info.file?.path !== path) return;
     const fresh = editor.getValue().split('\n');
     if (fresh.slice(block.start + 1, block.end).join('\n') !== body) return;

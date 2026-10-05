@@ -14,6 +14,8 @@ image: https://example.com/cover.png
 ```
 ````
 
+**Using it with Auto Card Link:** only one plugin can draw `cardlink` blocks at a time. If Auto Card Link is on, it keeps drawing them and URL Cards says so once; its commands still work. Turn Auto Card Link off and restart URL Cards to switch over.
+
 ## Network use
 
 **This plugin sends web requests.** When you convert an address (or paste one, if you turn that on), it requests that page from your device with Obsidian's `requestUrl` to read its title, description, image and icon. The site you chose sees that request; nothing is sent anywhere else: no analytics, no third-party service. Only the first 300 KB are read, and only public `http` and `https` addresses are requested. Local and private addresses (`localhost`, `192.168.x.x`, `10.x.x.x`, `.local`) never are.
@@ -24,7 +26,7 @@ A card keeps its image and icon as addresses in the block. When a note with card
 
 | Command | What it does |
 |---|---|
-| Convert URL to card | Turns the address under the cursor, in the selection, or the only one on the line, into a `cardlink` block. A bare address or a `[text](address)` link on its own line becomes the card; in the middle of a sentence the text is split around it; in a list item the card sits indented under it. One **Undo** gives the address back. |
+| Convert URL to card | Turns the address under the cursor, in the selection, or the only one on the line, into a `cardlink` block. A bare address or a `[text](address)` link on its own line becomes the card; in the middle of a sentence the text is split around it; in a list item or task the card sits indented under it, and in a quote or callout every line of the card keeps the `>`. One **Undo** gives the address back. |
 | Refresh card | With the cursor inside a `cardlink` block, fetches the page again and rewrites the block. |
 
 If a page cannot be read or has no title, the card shows just the site name. No default hotkeys; assign your own in **Settings → Hotkeys**.

@@ -105,15 +105,22 @@ export interface UrlTarget {
   from: number;
   to: number;
   url: string;
-  /** Text before `from` that is only an indent or a list marker, so the card can take its place on the line. */
+  /** What precedes the address when it is only quote marks, indent and a list marker (with its checkbox), else ''. */
   prefix: string;
+  /** True when only `prefix` precedes the address, so the card can take its place on the line. */
+  leading: boolean;
   /** True when nothing else is on the line: the card replaces the whole line. */
   alone: boolean;
+  /** True when the line is a list item: the card goes under the item, indented by the marker. */
+  marker: boolean;
+  /** Start of every extra line the card needs to stay in the same quote or list item: the quote marks, then the marker's width in spaces. */
+  linePrefix: string;
   /** Link text, when the target is `[text](url)`. */
   label?: string;
 }
 
-const LIST_PREFIX = /^(\s*(?:(?:[-*+]|\d{1,9}[.)])\s+(?:\[.\]\s+)?)?)/;
+// Indent and quote marks (blockquote or callout), then a list marker and its task checkbox.
+const LINE_PREFIX = /^(\s*(?:>[ \t]?)*\s*)((?:[-*+]|\d{1,9}[.)])[ \t]+(?:\[.\][ \t]+)?)?/;
 
 /** The address to turn into a card on `line`: the selected one, the one under `ch`, or the only one on the line. */
 export function findUrlTarget(line: string, ch: number, selected?: { from: number; to: number }): UrlTarget | null {
@@ -134,11 +141,44 @@ export function findUrlTarget(line: string, ch: number, selected?: { from: numbe
   let pick = candidates.find((c) => (selected ? selected.from < c.to && selected.to > c.from : ch >= c.from && ch <= c.to));
   if (!pick && candidates.length === 1) pick = candidates[0];
   if (!pick) return null;
-  const before = line.slice(0, pick.from);
-  const prefix = LIST_PREFIX.exec(before)?.[1] ?? '';
-  const onlyPrefix = before === prefix;
-  const alone = onlyPrefix && line.slice(pick.to).trim() === '';
-  return { ...pick, prefix: onlyPrefix ? prefix : '', alone };
+  const parts = LINE_PREFIX.exec(line);
+  const quote = parts?.[1] ?? '';
+  const marker = parts?.[2] ?? '';
+  const prefix = quote + marker;
+  // The card sits under the item text, so it is indented by the bullet or number only, not by a task checkbox.
+  const width = /^(?:[-*+]|\d{1,9}[.)])[ \t]+/.exec(marker)?.[0].length ?? 0;
+  const leading = line.slice(0, pick.from) === prefix;
+  return {
+    ...pick,
+    prefix: leading ? prefix : '',
+    leading,
+    alone: leading && line.slice(pick.to).trim() === '',
+    marker: marker !== '',
+    linePrefix: quote + ' '.repeat(width),
+  };
+}
+
+/**
+ * The edit that puts the card for `target` into `line`: replace the line from
+ * column `from` to its end with `text`. Every added line starts with
+ * `linePrefix`, so the card stays inside a quote, callout or list item. In the
+ * middle of a sentence the text splits around the card, and punctuation right
+ * after the address stays with the text before it.
+ */
+export function cardEdit(line: string, target: UrlTarget, meta: PageMeta): { from: number; text: string } {
+  const block = cardBlock(meta, target.linePrefix);
+  if (target.leading) {
+    const after = line.slice(target.to).trim();
+    const tail = after ? '\n' + target.linePrefix + after : '';
+    // After a list marker the card starts on the next line; otherwise it takes the address's place.
+    const body = target.marker ? '\n' + block : block.slice(target.linePrefix.length);
+    return { from: target.prefix.length, text: body + tail };
+  }
+  const rest = line.slice(target.to);
+  const punct = /^[.,;:!?]+/.exec(rest)?.[0] ?? '';
+  const trail = rest.slice(punct.length).trim();
+  const lead = line.slice(0, target.from).replace(/\s+$/, '') + punct;
+  return { from: 0, text: lead + '\n' + block + (trail ? '\n' + target.linePrefix + trail : '') };
 }
 
 /** The line range `[start, end]` of the `cardlink` block that holds `line`, or null. Fences must be balanced above it. */
