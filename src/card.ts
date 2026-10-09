@@ -29,6 +29,17 @@ function text(v: unknown): string | undefined {
   return undefined;
 }
 
+/** A block value without its quotes: `"a \\"b\\""` and `'it''s'` give the text they hold. */
+export function unquoteValue(raw: string): string {
+  let v = raw;
+  if ((v.startsWith('"') && v.endsWith('"') && v.length >= 2) || (v.startsWith("'") && v.endsWith("'") && v.length >= 2)) {
+    const q = v[0];
+    v = v.slice(1, -1);
+    v = q === '"' ? v.replace(/\\(["\\])/g, '$1').replace(/\\n/g, ' ') : v.replace(/''/g, "'");
+  }
+  return v;
+}
+
 /**
  * The same `key: value` lines as Auto Card Link's blocks, read leniently:
  * a value may be quoted or bare, and an unquoted `[[wikilink]]` is fine.
@@ -39,13 +50,7 @@ export function parseFlat(source: string): Record<string, string> {
   for (const raw of source.split(/\r?\n/)) {
     const m = /^\s*([A-Za-z_][\w-]*)\s*:\s*(.*?)\s*$/.exec(raw);
     if (!m) continue;
-    let v = m[2];
-    if ((v.startsWith('"') && v.endsWith('"') && v.length >= 2) || (v.startsWith("'") && v.endsWith("'") && v.length >= 2)) {
-      const q = v[0];
-      v = v.slice(1, -1);
-      v = q === '"' ? v.replace(/\\(["\\])/g, '$1').replace(/\\n/g, ' ') : v.replace(/''/g, "'");
-    }
-    out[m[1].toLowerCase()] = v;
+    out[m[1].toLowerCase()] = unquoteValue(m[2]);
   }
   return out;
 }
@@ -84,7 +89,7 @@ export function imageAllowed(value: string): boolean {
   return wikilinkTarget(value) !== null || isWebUrl(value);
 }
 
-function yamlString(s: string): string {
+export function yamlString(s: string): string {
   // A JSON string is a valid YAML double-quoted scalar.
   return JSON.stringify(s.replace(/\s+/g, ' ').trim());
 }
@@ -181,8 +186,9 @@ export function cardEdit(line: string, target: UrlTarget, meta: PageMeta): { fro
   return { from: 0, text: lead + '\n' + block + (trail ? '\n' + target.linePrefix + trail : '') };
 }
 
-/** The line range `[start, end]` of the `cardlink` block that holds `line`, or null. Fences must be balanced above it. */
-export function findCardBlock(lines: string[], line: number): { start: number; end: number } | null {
+/** The line range of every `cardlink` block, in order. Fences are balanced from the top; other code blocks are skipped whole. */
+export function findCardBlocks(lines: string[]): { start: number; end: number }[] {
+  const out: { start: number; end: number }[] = [];
   let open = -1;
   let fence = '';
   for (let i = 0; i < lines.length; i++) {
@@ -194,15 +200,19 @@ export function findCardBlock(lines: string[], line: number): { start: number; e
       if (!/^\s*cardlink\s*$/i.test(m[2])) {
         // Some other code block: skip to its end.
         const close = lines.findIndex((l, j) => j > i && new RegExp(`^\\s*${fence[0]}{${fence.length},}\\s*$`).test(l));
-        if (close === -1) return null;
-        if (line >= i && line <= close) return null;
+        if (close === -1) return out;
         i = close;
         open = -1;
       }
     } else if (m[1][0] === fence[0] && m[1].length >= fence.length && m[2].trim() === '') {
-      if (line >= open && line <= i) return { start: open, end: i };
+      out.push({ start: open, end: i });
       open = -1;
     }
   }
-  return null;
+  return out;
+}
+
+/** The line range `[start, end]` of the `cardlink` block that holds `line`, or null. Fences must be balanced above it. */
+export function findCardBlock(lines: string[], line: number): { start: number; end: number } | null {
+  return findCardBlocks(lines).find((b) => line >= b.start && line <= b.end) ?? null;
 }
