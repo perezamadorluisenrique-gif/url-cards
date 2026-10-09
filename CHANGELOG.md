@@ -4,7 +4,7 @@ The release workflow uses the section named after the version being released
 as the release description, so every version needs one. `npm version <x.y.z>`
 renames the `Unreleased` heading below to that version.
 
-## Unreleased
+## 0.2.0
 
 - Cards that work offline: turn on "Save card images in the vault" and a new or refreshed card downloads its image and site icon into your vault (up to 5 MB each) and points at those files.
 - New command "Save the images of every card in this note" does the same for cards you already have, in one undo step.

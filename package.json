@@ -1,6 +1,6 @@
 {
   "name": "url-cards",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "URL Cards for Obsidian - Shows web addresses as cards with title, description and image, and reads existing cardlink blocks.",
   "main": "main.js",
   "scripts": {

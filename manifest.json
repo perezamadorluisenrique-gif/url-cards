@@ -1,7 +1,7 @@
 {
   "id": "url-cards",
   "name": "URL Cards",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "minAppVersion": "1.5.7",
   "description": "Shows web addresses as cards with title, description and image, and reads existing cardlink blocks.",
   "author": "Siulved54",
