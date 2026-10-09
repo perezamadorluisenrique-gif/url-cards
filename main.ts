@@ -1,8 +1,9 @@
-import { Notice, Plugin, PluginSettingTab, Setting, getLinkpath, parseYaml, requestUrl, setIcon } from 'obsidian';
-import type { App, Editor, MarkdownFileInfo, SettingDefinitionItem } from 'obsidian';
+import { Notice, Plugin, PluginSettingTab, Setting, getLinkpath, normalizePath, parseYaml, requestUrl, setIcon } from 'obsidian';
+import type { App, Editor, EditorChange, MarkdownFileInfo, SettingDefinitionItem } from 'obsidian';
 
-import { blockIndent, cardBlock, cardEdit, findCardBlock, findUrlTarget, imageAllowed, parseFlat, toCard, wikilinkTarget } from './src/card.ts';
+import { blockIndent, cardBlock, cardEdit, findCardBlock, findCardBlocks, findUrlTarget, imageAllowed, parseFlat, toCard, wikilinkTarget } from './src/card.ts';
 import type { CardData, UrlTarget } from './src/card.ts';
+import { IMAGE_EXTENSIONS, MAX_IMAGE_BYTES, imageBaseName, imageExtension, localImageLink, remoteImageFields, rewriteImageFields } from './src/images.ts';
 import { asBareUrl, bareCard, extractCard, isWebUrl } from './src/meta.ts';
 import type { PageMeta } from './src/meta.ts';
 
@@ -11,6 +12,10 @@ interface UrlCardsSettings {
   cardOnPaste: boolean;
   /** Load the thumbnail and the site icon from the card's own addresses. Off keeps every request to the site you saved. */
   loadImages: boolean;
+  /** Making or refreshing a card downloads its image and site icon into the vault and points the card at the files, so it works offline. */
+  saveImages: boolean;
+  /** Folder for those files. Empty uses the vault's attachment folder setting. */
+  imageFolder: string;
   /** The "another plugin draws cardlink blocks" notice was shown and the clash has not cleared since. */
   conflictNoticeShown: boolean;
 }
@@ -18,6 +23,8 @@ interface UrlCardsSettings {
 const DEFAULT_SETTINGS: UrlCardsSettings = {
   cardOnPaste: false,
   loadImages: true,
+  saveImages: false,
+  imageFolder: '',
   conflictNoticeShown: false,
 };
 
@@ -65,6 +72,13 @@ export default class UrlCardsPlugin extends Plugin {
         if (!checking) void this.refreshCard(editor, ctx, block);
         return true;
       },
+    });
+
+    this.addCommand({
+      id: 'save-card-images',
+      name: 'Save the images of every card in this note',
+      icon: 'image-down',
+      editorCallback: (editor, ctx) => void this.saveImagesInNote(editor, ctx),
     });
 
     this.addSettingTab(new UrlCardsSettingTab(this.app, this));
@@ -181,6 +195,127 @@ export default class UrlCardsPlugin extends Plugin {
     }
   }
 
+  /** The image at `url` with its file extension, or null when it is missing, not an image, empty or over 5 MB. */
+  async fetchImage(url: string): Promise<{ data: ArrayBuffer; ext: string } | null> {
+    if (!isWebUrl(url)) return null;
+    try {
+      const request = requestUrl({ url, throw: false, headers: { Accept: 'image/*' } });
+      let timer = 0;
+      const timeout = new Promise<null>((resolve) => {
+        timer = window.setTimeout(() => resolve(null), TIMEOUT_MS * 2);
+      });
+      const res = await Promise.race([request, timeout]).finally(() => window.clearTimeout(timer));
+      if (!res || res.status >= 400) return null;
+      const type = Object.entries(res.headers).find(([k]) => k.toLowerCase() === 'content-type')?.[1];
+      const ext = imageExtension(type);
+      if (!ext) return null;
+      const data = res.arrayBuffer;
+      if (!data.byteLength || data.byteLength > MAX_IMAGE_BYTES) return null;
+      return { data, ext };
+    } catch {
+      return null;
+    }
+  }
+
+  // ---- images in the vault ----
+
+  /** The folder that holds saved images for a card in the note at `sourcePath`: the setting, else wherever Obsidian puts attachments for that note. */
+  private async imageFolder(sourcePath: string): Promise<string> {
+    const custom = normalizePath(this.settings.imageFolder.trim()).replace(/^\/+|\/+$/g, '');
+    if (custom && custom !== '/' && !custom.split('/').includes('..')) return custom;
+    const probe = await this.app.fileManager.getAvailablePathForAttachment('url-cards-image.png', sourcePath);
+    const cut = probe.lastIndexOf('/');
+    return cut === -1 ? '' : probe.slice(0, cut);
+  }
+
+  /**
+   * Saves the image at `url` into the vault, or finds the copy saved earlier, and
+   * returns the block value that points at it (`[[folder/name.png]]`). Null when
+   * it cannot be saved; the card then keeps the web address.
+   */
+  async saveImage(url: string, sourcePath: string): Promise<string | null> {
+    try {
+      const folder = await this.imageFolder(sourcePath);
+      const base = imageBaseName(url);
+      const at = (ext: string) => normalizePath(folder ? `${folder}/${base}.${ext}` : `${base}.${ext}`);
+      for (const ext of IMAGE_EXTENSIONS) {
+        const file = this.app.vault.getFileByPath(at(ext));
+        if (file) return localImageLink(file.path);
+      }
+      const image = await this.fetchImage(url);
+      if (!image) return null;
+      const path = at(image.ext);
+      // Check the wikilink can hold the path before writing anything.
+      if (!localImageLink(path)) return null;
+      if (folder && !this.app.vault.getFolderByPath(folder)) {
+        try {
+          await this.app.vault.createFolder(folder);
+        } catch {
+          if (!this.app.vault.getFolderByPath(folder)) return null;
+        }
+      }
+      try {
+        await this.app.vault.createBinary(path, image.data);
+      } catch {
+        // Another card saved the same file a moment ago.
+        if (!this.app.vault.getFileByPath(path)) return null;
+      }
+      return localImageLink(path);
+    } catch {
+      return null;
+    }
+  }
+
+  /** With "Save card images in the vault" on, `meta` with its image and icon swapped for vault files where saving worked. */
+  private async withSavedImages(meta: PageMeta, sourcePath: string | undefined, showProgress = false): Promise<PageMeta> {
+    if (!this.settings.saveImages || !sourcePath || (!meta.image && !meta.favicon)) return meta;
+    const progress = showProgress ? new Notice('Saving images…', 0) : null;
+    try {
+      const out = { ...meta };
+      if (meta.image) out.image = (await this.saveImage(meta.image, sourcePath)) ?? meta.image;
+      if (meta.favicon) out.favicon = (await this.saveImage(meta.favicon, sourcePath)) ?? meta.favicon;
+      return out;
+    } finally {
+      progress?.hide();
+    }
+  }
+
+  /** Saves the images of every card in the note and points the cards at the files, in one edit. */
+  private async saveImagesInNote(editor: Editor, info: MarkdownFileInfo) {
+    const path = info.file?.path;
+    if (!path) return;
+    const before = editor.getValue().split('\n');
+    const urls = new Set<string>();
+    for (const block of findCardBlocks(before)) for (const f of remoteImageFields(before, block)) urls.add(f.url);
+    if (!urls.size) {
+      new Notice('No card in this note has an image to save.');
+      return;
+    }
+    const progress = new Notice('Saving images…', 0);
+    const saved = new Map<string, string>();
+    try {
+      for (const url of urls) {
+        const value = await this.saveImage(url, path);
+        if (value) saved.set(url, value);
+      }
+    } finally {
+      progress.hide();
+    }
+    if (info.file?.path !== path) return;
+    // The note may have changed while the images loaded: find the fields again in its current text.
+    const now = editor.getValue().split('\n');
+    const changes: EditorChange[] = [];
+    for (const block of findCardBlocks(now)) {
+      for (const edit of rewriteImageFields(remoteImageFields(now, block), saved)) {
+        changes.push({ from: { line: edit.line, ch: 0 }, to: { line: edit.line, ch: now[edit.line].length }, text: edit.text });
+      }
+    }
+    if (changes.length) editor.transaction({ changes });
+    const failed = urls.size - saved.size;
+    const done = saved.size === 1 ? '1 image saved' : `${saved.size} images saved`;
+    new Notice(failed ? `${done}. ${failed} could not be saved and stay web addresses.` : `${done}.`);
+  }
+
   // ---- writing cards ----
 
   private async convertAtCursor(editor: Editor, info: MarkdownFileInfo) {
@@ -197,8 +332,10 @@ export default class UrlCardsPlugin extends Plugin {
       return;
     }
     const path = info.file?.path;
-    const meta = await this.fetchCard(target.url, true);
-    if (!meta || info.file?.path !== path) return;
+    const fetched = await this.fetchCard(target.url, true);
+    if (!fetched || info.file?.path !== path) return;
+    const meta = await this.withSavedImages(fetched, path, true);
+    if (info.file?.path !== path) return;
     if (meta.title === meta.host && !meta.description) new Notice('The page gave no details; the card shows only its address.');
     // The line may have changed while the page loaded: only edit if the same address is still there.
     const now = findUrlTarget(editor.getLine(cursor.line), target.from);
@@ -216,8 +353,10 @@ export default class UrlCardsPlugin extends Plugin {
   /** After a paste put the bare address on its line, swap it for a card if it is still alone there. */
   private async cardForLine(editor: Editor, info: MarkdownFileInfo, lineNo: number, url: string) {
     const path = info.file?.path;
-    const meta = await this.fetchCard(url);
-    if (!meta || info.file?.path !== path) return;
+    const fetched = await this.fetchCard(url);
+    if (!fetched || info.file?.path !== path) return;
+    const meta = await this.withSavedImages(fetched, path);
+    if (info.file?.path !== path) return;
     const lines = editor.getValue().split('\n');
     const same = (i: number) => {
       const t = lines[i] !== undefined ? findUrlTarget(lines[i], 0) : null;
@@ -242,8 +381,10 @@ export default class UrlCardsPlugin extends Plugin {
       return;
     }
     const path = info.file?.path;
-    const meta = await this.fetchCard(parsed.card.url, true);
-    if (!meta || info.file?.path !== path) return;
+    const fetched = await this.fetchCard(parsed.card.url, true);
+    if (!fetched || info.file?.path !== path) return;
+    const meta = await this.withSavedImages(fetched, path, true);
+    if (info.file?.path !== path) return;
     const fresh = editor.getValue().split('\n');
     if (fresh.slice(block.start + 1, block.end).join('\n') !== body) return;
     const indent = /^\s*/.exec(lines[block.start])?.[0] ?? '';
@@ -271,9 +412,17 @@ const TEXT = {
     name: 'Make a card when pasting an address',
     desc: 'When you paste a lone address on an empty line, the page is requested to read its title, description and image, and the address becomes a card. The address is sent to the site. Turn this off to use only the command.',
   },
+  saveImages: {
+    name: 'Save card images in the vault',
+    desc: "When you make or refresh a card, download its image and site icon into your vault and point the card at those files, so it still looks right offline and no server is contacted when you open the note. Images over 5 MB, or that are not images, stay web addresses. The command 'Save the images of every card in this note' does the same for cards you already have, whatever this setting says.",
+  },
+  imageFolder: {
+    name: 'Folder for saved card images',
+    desc: "Leave empty to use the attachment folder set in Obsidian's Files and links.",
+  },
   loadImages: {
     name: 'Show images from the web',
-    desc: "Cards load their thumbnail and site icon from the addresses saved in the block, which tells those servers you opened the note. Turn this off to show text only; images from your vault still load.",
+    desc: "Cards load their thumbnail and site icon from the addresses saved in the block, which tells those servers you opened the note. Turn this off to show text only; images saved in your vault still load.",
   },
 };
 
@@ -290,6 +439,8 @@ class UrlCardsSettingTab extends PluginSettingTab {
     return [
       { ...TEXT.cardOnPaste, control: { type: 'toggle', key: 'cardOnPaste', defaultValue: DEFAULT_SETTINGS.cardOnPaste } },
       { ...TEXT.loadImages, control: { type: 'toggle', key: 'loadImages', defaultValue: DEFAULT_SETTINGS.loadImages } },
+      { ...TEXT.saveImages, control: { type: 'toggle', key: 'saveImages', defaultValue: DEFAULT_SETTINGS.saveImages } },
+      { ...TEXT.imageFolder, control: { type: 'folder', key: 'imageFolder', defaultValue: DEFAULT_SETTINGS.imageFolder, placeholder: 'Attachment folder' } },
     ];
   }
 
@@ -316,5 +467,20 @@ class UrlCardsSettingTab extends PluginSettingTab {
       .setName(TEXT.loadImages.name)
       .setDesc(TEXT.loadImages.desc)
       .addToggle((t) => t.setValue(this.plugin.settings.loadImages).onChange((v) => this.setControlValue('loadImages', v)));
+
+    new Setting(containerEl)
+      .setName(TEXT.saveImages.name)
+      .setDesc(TEXT.saveImages.desc)
+      .addToggle((t) => t.setValue(this.plugin.settings.saveImages).onChange((v) => this.setControlValue('saveImages', v)));
+
+    new Setting(containerEl)
+      .setName(TEXT.imageFolder.name)
+      .setDesc(TEXT.imageFolder.desc)
+      .addText((t) =>
+        t
+          .setPlaceholder('Attachment folder')
+          .setValue(this.plugin.settings.imageFolder)
+          .onChange((v) => this.setControlValue('imageFolder', v.trim())),
+      );
   }
 }

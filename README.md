@@ -18,9 +18,11 @@ image: https://example.com/cover.png
 
 ## Network use
 
-**This plugin sends web requests.** When you convert an address (or paste one, if you turn that on), it requests that page from your device with Obsidian's `requestUrl` to read its title, description, image and icon. The site you chose sees that request; nothing is sent anywhere else: no analytics, no third-party service. Only the first 300 KB are read, and only public `http` and `https` addresses are requested. Local and private addresses (`localhost`, `192.168.x.x`, `10.x.x.x`, `.local`) never are.
+**This plugin sends web requests.** When you convert an address (or paste one, if you turn that on), it requests that page from your device with Obsidian's `requestUrl` to read its title, description, image and icon. With **Save card images in the vault** on, it also requests the card's image and icon from the servers that host them, once, to save them. The site you chose sees that request; nothing is sent anywhere else: no analytics, no third-party service. Only the first 300 KB are read, and only public `http` and `https` addresses are requested. Local and private addresses (`localhost`, `192.168.x.x`, `10.x.x.x`, `.local`) never are.
 
 A card keeps its image and icon as addresses in the block. When a note with cards is shown, Obsidian loads those images from their servers, which tells them you opened the note. Turn off **Show images from the web** to avoid that: cards then show text only, and images from your vault (`image: "[[cover.png]]"`) still load. Images from private addresses or other schemes are never loaded.
+
+To keep a card's pictures with the note, turn on **Save card images in the vault** (see below). The image and icon are then requested once, when the card is made, and never again when the note is opened.
 
 ## Commands
 
@@ -28,6 +30,7 @@ A card keeps its image and icon as addresses in the block. When a note with card
 |---|---|
 | Convert URL to card | Turns the address under the cursor, in the selection, or the only one on the line, into a `cardlink` block. A bare address or a `[text](address)` link on its own line becomes the card; in the middle of a sentence the text is split around it; in a list item or task the card sits indented under it, and in a quote or callout every line of the card keeps the `>`. One **Undo** gives the address back. |
 | Refresh card | With the cursor inside a `cardlink` block, fetches the page again and rewrites the block. |
+| Save the images of every card in this note | Downloads the image and site icon of every card in the note that still points at a web address, and rewrites those two lines to point at the saved files. Cards that already use vault files are left alone. All the changes are one **Undo**. An image that cannot be saved keeps its web address. Works whether or not the setting below is on. |
 
 If a page cannot be read or has no title, the card shows just the site name. No default hotkeys; assign your own in **Settings → Hotkeys**.
 
@@ -36,11 +39,13 @@ If a page cannot be read or has no title, the card shows just the site name. No 
 | Setting | Default | What it does |
 |---|---|---|
 | Make a card when pasting an address | Off | A lone address pasted on an empty line (or an empty list item) becomes a card a moment after it lands. Never inside a code block or in the middle of text. |
-| Show images from the web | On | Loads each card's thumbnail and site icon from the addresses saved in its block. |
+| Show images from the web | On | Loads each card's thumbnail and site icon from the addresses saved in its block. Images saved in your vault always show, even with this off. |
+| Save card images in the vault | Off | When you convert, paste or refresh a card, downloads its image and site icon into your vault and writes them in the block as vault files, so the card works offline and opening the note contacts no server. Only images up to 5 MB are saved; anything else stays a web address. |
+| Folder for saved card images | Attachment folder | Where those files go. Empty uses the attachment location from Obsidian's **Files and links** settings. |
 
 ## Writing a card by hand
 
-The block takes `url` and `title` (both required) and optionally `description`, `host`, `favicon` and `image`. `image` and `favicon` can be a web address or a `[[wikilink]]` to a file in your vault. A block without `url` and `title`, or whose `url` is not `http`/`https`, shows an error instead of a card.
+The block takes `url` and `title` (both required) and optionally `description`, `host`, `favicon` and `image`. `image` and `favicon` can be a web address or a `[[wikilink]]` to a file in your vault. Saved images are named after the site and a short code made from the image address, like `example-com-1a2b3c4d.png`, and the block holds `image: "[[Attachments/example-com-1a2b3c4d.png]]"`. Making a second card for the same image reuses the file. Delete the file and the card shows no picture until you refresh it. Other plugins that read `cardlink` blocks may not show vault images. A block without `url` and `title`, or whose `url` is not `http`/`https`, shows an error instead of a card.
 
 ## Installation
 
