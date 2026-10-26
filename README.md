@@ -2,7 +2,7 @@
 
 Turn a web address into a card with the page's title, description, image and site icon, in Reading view and Live Preview.
 
-![Three web links shown as cards in Reading view](docs/screenshot.png)
+![Three web links shown as cards in Reading view](https://raw.githubusercontent.com/perezamadorluisenrique-gif/url-cards/main/docs/screenshot.png)
 
 It reads and writes the same `cardlink` code blocks as Auto Card Link, so notes that already use that plugin show their cards untouched.
 
