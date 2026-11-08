@@ -6,6 +6,7 @@ import type { CardData, UrlTarget } from './src/card.ts';
 import { IMAGE_EXTENSIONS, MAX_IMAGE_BYTES, imageBaseName, imageExtension, localImageLink, remoteImageFields, rewriteImageFields } from './src/images.ts';
 import { asBareUrl, bareCard, extractCard, isWebUrl } from './src/meta.ts';
 import type { PageMeta } from './src/meta.ts';
+import { moreDefinitions, renderMore } from './src/more-link.ts';
 
 interface UrlCardsSettings {
   /** A lone address pasted on an empty line becomes a card. The commands work either way. */
@@ -441,6 +442,7 @@ class UrlCardsSettingTab extends PluginSettingTab {
       { ...TEXT.loadImages, control: { type: 'toggle', key: 'loadImages', defaultValue: DEFAULT_SETTINGS.loadImages } },
       { ...TEXT.saveImages, control: { type: 'toggle', key: 'saveImages', defaultValue: DEFAULT_SETTINGS.saveImages } },
       { ...TEXT.imageFolder, control: { type: 'folder', key: 'imageFolder', defaultValue: DEFAULT_SETTINGS.imageFolder, placeholder: 'Attachment folder' } },
+      ...(moreDefinitions() as SettingDefinitionItem[]),
     ];
   }
 
@@ -482,5 +484,6 @@ class UrlCardsSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.imageFolder)
           .onChange((v) => this.setControlValue('imageFolder', v.trim())),
       );
+    renderMore(this.containerEl, (el) => new Setting(el));
   }
 }
